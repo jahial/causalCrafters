@@ -1,0 +1,454 @@
+---
+title: "Trabajo Inferencia Causal: Efecto de factores personales del solicitante en la denegación de crédito hipotecario"
+author: "Nicolás Camañes, Pedro José Cánovas, Javier Hinarejos Albero, Diego Lacomba Fañanas y Isaac Martí García"
+format: 
+  html: 
+    embed-resources: true
+output: html_document
+editor: visual
+---
+
+## Análisis de los datos y emparejamiento
+
+### Carga de librerías
+
+```{r}
+library(MatchIt)
+library(dplyr)
+library(httr)
+library(ggplot2)
+library(tidyverse)
+library(cobalt)
+library(dplyr)
+library(knitr)
+library(quickmatch)
+```
+
+### Descarga del conjunto de datos
+
+```{r eval=FALSE, include=FALSE}
+url <- "https://files.consumerfinance.gov/hmda-historic-loan-data/hmda_2017_nc_all-records_labels.zip"
+zip_file_path <- "hmda_2017_nc_all-records_labels.zip"
+GET(url, write_disk(zip_file_path, overwrite = TRUE))
+unzip(zip_file_path, exdir = "./data")
+
+extracted_files <- list.files("./data")
+print("Archivos extraídos:")
+print(extracted_files)
+```
+
+### Carga de datos
+
+En primer lugar, cargamos el conjunto de datos correspondiente a los datos sobre hipotecas al público, bajo la Ley de Divulgación de Hipotecas de Vivienda (HMDA) del año 2017 en el estado de North Carolina.
+
+```{r}
+hmda_data <- read.csv('data/hmda_2017_nc_all-records_labels.csv')
+```
+
+### Descripción del dataframe
+
+#### *Respondent Information*
+
+| Field         | Description                                            |
+|---------------|--------------------------------------------------------|
+| Respondent ID | 10 Character Identifier                                |
+| Agency        | 1 -- Office of the Comptroller of the Currency (OCC)   |
+|               | 2 -- Federal Reserve System (FRS)                      |
+|               | 3 -- Federal Deposit Insurance Corporation (FDIC)      |
+|               | 5 -- National Credit Union Administration (NCUA)       |
+|               | 7 -- Department of Housing and Urban Development (HUD) |
+|               | 9 -- Consumer Financial Protection Bureau (CFPB)       |
+| Edit Status   | Blank -- No edit failures                              |
+|               | 5 -- Validity edit failure only                        |
+|               | 6 -- Quality edit failure only                         |
+|               | 7 -- Validity and quality edit failures                |
+
+#### *Property Location*
+
+| Field  | Description                                         |
+|--------|-----------------------------------------------------|
+| MSA/MD | Metropolitan Statistical Area/Metropolitan Division |
+| State  | Two-digit FIPS state identifier                     |
+| County | Three-digit FIPS county identifier                  |
+| Tract  | Census tract number                                 |
+
+#### *Loan Information*
+
+| Field           | Description                                                             |
+|-----------------|-------------------------------------------------------|
+| Sequence Number | One-up number scheme for each respondent to make each loan unique       |
+| Loan Type       | 1 -- Conventional (any loan other than FHA, VA, FSA, or RHS loans)      |
+|                 | 2 -- FHA-insured (Federal Housing Administration)                       |
+|                 | 3 -- VA-guaranteed (Veterans Administration)                            |
+|                 | 4 -- FSA/RHS (Farm Service Agency or Rural Housing Service)             |
+| Property Type   | 1 -- One to four-family (other than manufactured housing)               |
+|                 | 2 -- Manufactured housing                                               |
+|                 | 3 -- Multifamily                                                        |
+| Loan Purpose    | 1 -- Home purchase                                                      |
+|                 | 2 -- Home improvement                                                   |
+|                 | 3 -- Refinancing                                                        |
+| Owner-Occupancy | 1 -- Owner-occupied as a principal dwelling                             |
+|                 | 2 -- Not owner-occupied                                                 |
+|                 | 3 -- Not applicable                                                     |
+| Loan Amount     | in thousands of dollars                                                 |
+| Preapproval     | 1 -- Preapproval was requested                                          |
+|                 | 2 -- Preapproval was not requested                                      |
+|                 | 3 -- Not applicable                                                     |
+| Action Taken    | 1 -- Loan originated                                                    |
+|                 | 2 -- Application approved but not accepted                              |
+|                 | 3 -- Application denied by financial institution                        |
+|                 | 4 -- Application withdrawn by applicant                                 |
+|                 | 5 -- File closed for incompleteness                                     |
+|                 | 6 -- Loan purchased by the institution                                  |
+|                 | 7 -- Preapproval request denied by financial institution                |
+|                 | 8 -- Preapproval request approved but not accepted (optional reporting) |
+
+#### *Applicant Information*
+
+| Field               | Description                                                                            |
+|-----------------|-------------------------------------------------------|
+| Ethnicity           | 1 -- Hispanic or Latino                                                                |
+|                     | 2 -- Not Hispanic or Latino                                                            |
+|                     | 3 -- Information not provided by applicant in mail, Internet, or telephone application |
+|                     | 4 -- Not applicable                                                                    |
+|                     | 5 -- No co-applicant                                                                   |
+| Race                | 1 -- American Indian or Alaska Native                                                  |
+|                     | 2 -- Asian                                                                             |
+|                     | 3 -- Black or African American                                                         |
+|                     | 4 -- Native Hawaiian or Other Pacific Islander                                         |
+|                     | 5 -- White                                                                             |
+|                     | 6 -- Information not provided by applicant in mail, Internet, or telephone application |
+|                     | 7 -- Not applicable                                                                    |
+|                     | 8 -- No co-applicant                                                                   |
+| Sex                 | 1 -- Male                                                                              |
+|                     | 2 -- Female                                                                            |
+|                     | 3 -- Information not provided by applicant in mail, Internet, or telephone application |
+|                     | 4 -- Not applicable                                                                    |
+|                     | 5 -- No co-applicant                                                                   |
+| Gross Annual Income | in thousands of dollars                                                                |
+
+#### *Purchaser and Denial Information*
+
+| Field              | Description                                                                       |
+|-----------------|-------------------------------------------------------|
+| Type of Purchaser  | 0 -- Loan was not originated or was not sold in calendar year covered by register |
+|                    | 1 -- Fannie Mae (FNMA)                                                            |
+|                    | 2 -- Ginnie Mae (GNMA)                                                            |
+|                    | 3 -- Freddie Mac (FHLMC)                                                          |
+|                    | 4 -- Farmer Mac (FAMC)                                                            |
+|                    | 5 -- Private securitization                                                       |
+|                    | 6 -- Commercial bank, savings bank or savings association                         |
+|                    | 7 -- Life insurance company, credit union, mortgage bank, or finance company      |
+|                    | 8 -- Affiliate institution                                                        |
+|                    | 9 -- Other type of purchaser                                                      |
+| Reasons for Denial | 1 -- Debt-to-income ratio                                                         |
+|                    | 2 -- Employment history                                                           |
+|                    | 3 -- Credit history                                                               |
+|                    | 4 -- Collateral                                                                   |
+|                    | 5 -- Insufficient cash (downpayment, closing costs)                               |
+|                    | 6 -- Unverifiable information                                                     |
+|                    | 7 -- Credit application incomplete                                                |
+|                    | 8 -- Mortgage insurance denied                                                    |
+|                    | 9 -- Other                                                                        |
+
+#### *Other Data*
+
+| Field                                    | Description                                |
+|-----------------------------------|-------------------------------------|
+| HOEPA Status                             | 1 -- HOEPA loan                            |
+| (only for loans originated or purchased) | 2 -- Not a HOEPA loan                      |
+| Lien Status                              | 1 -- Secured by a first lien               |
+| (only for applications and originations) | 2 -- Secured by a subordinate lien         |
+|                                          | 3 -- Not secured by a lien                 |
+|                                          | 4 -- Not applicable (purchased loans)      |
+| Application Date Indicator               | 0 -- Application Date \>= 01-01-2004       |
+|                                          | 1 -- Application Date \< 01-01-2004        |
+|                                          | 2 -- Application Date = NA (Not Available) |
+
+#### *Census Information*
+
+| Field                                           | Description                                                                                                     |
+|----------------------|--------------------------------------------------|
+| Population                                      | Total population in tract                                                                                       |
+| Minority Population %                           | Percentage of minority population to total population for tract. (Carried to two decimal places)                |
+| FFIEC Median Family Income                      | FFIEC Median family income in dollars for the MSA/MD in which the tract is located (adjusted annually by FFIEC) |
+| Tract to MSA/MD Median Family Income Percentage | \% of tract median family income compared to MSA/MD median family income. (Carried to two decimal places)       |
+| Number of Owner Occupied Units                  | Number of dwellings, including individual condominiums, that are lived in by the owner                          |
+| Number of 1- to 4-Family units                  | Dwellings that are built to house fewer than 5 families                                                         |
+
+### Exploración inicial dataset
+
+```{r}
+# Ver las primeras filas del conjunto de datos
+head(hmda_data)
+```
+
+### Variables de interés
+
+En primer lugar, **definimos la variable dependiente**: Creamos una nueva variable **`denied`** que es 1 si la acción tomada fue rechazada (**`action_taken == 3`**), y 0 en caso contrario.
+
+```{r}
+hmda_data <- hmda_data %>%
+  mutate(denied = ifelse(action_taken == 3, 1, 0))
+```
+
+En segundo lugar, **defnimos la variable independiente de interés**: Creamos una nueva variable **`refinancing`** que es 1 si el propósito del préstamo es refinanciamiento (**`loan_purpose == 3`**), y 0 en caso contrario.
+
+```{r}
+hmda_data <- hmda_data %>%
+  mutate(refinancing = ifelse(loan_purpose == 3, 1, 0))
+```
+
+Eliminamos del dataset las dos columnas que acabamos de modificar, ya que hemos creado dos nuevas columnas que las reemplazan.
+
+```{r}
+hmda_data <- hmda_data[, !colnames(hmda_data) %in% c("action_taken", "loan_purpose")]
+```
+
+Una vez tenemos la variable de tratamiento *refinancing* y la variable de respuesta *denied*, podemos ver el grado de asociación entre ambas.
+
+```{r}
+hmda_data %>% 
+  group_by(refinancing) %>% 
+  summarise(proporcion_impago_sept=mean(denied))
+```
+
+A partir de las medias estimadas en la mustra podemos estimar los siguientes parámetros:
+
+-   Diferencias de medias (DIM) = $0.181 - 0.124 = 0.057$
+
+-   Riego relativo (RR) = $\frac{0.181}{0.125} = 1.448$
+
+Previamente a realizar el emparejamiento es importante identificar las covariables que se emplearán. Estas variables deberán ser numéricas y no contener NAs.
+
+Primeramente, vamos a quedarnos con las columnas numéricas.
+
+```{r}
+numeric_vars <- hmda_data %>%
+  select_if(is.numeric) %>%
+  colnames()
+
+hmda_data_filtered1 <- hmda_data[, numeric_vars]
+```
+
+```{r}
+cat("Cantidad de columnas antes:", ncol(hmda_data), "\n")
+cat("Cantidad de columnas después:", ncol(hmda_data_filtered1))
+```
+
+Vamos, segunamente, a ver cuantas variables contienen NAs y cuanto es el porcentaje de estos.
+
+```{r}
+na_counts <- sapply(hmda_data_filtered1, function(x) sum(is.na(x)))
+na_percentage <- na_counts / nrow(hmda_data_filtered1) * 100
+na_counts_df <- data.frame(Variable = names(na_counts), 
+                           NA_Counts = na_counts, 
+                           NA_Percentage = na_percentage)
+na_counts_df_filtered <- na_counts_df %>% filter(NA_Counts > 0)
+kable(na_counts_df_filtered, row.names = FALSE)
+```
+
+Gracias a la tabla anterior vemos que hay algunas variables que contienen una gran cantidad de NAs. Vamos a eliminar aquellas columnas que tengan más de un 5% de NAs.
+
+```{r}
+cat("Cantidad de columnas antes:", ncol(hmda_data_filtered1), "\n")
+columns_to_keep <- names(na_percentage[na_percentage <= 5])
+hmda_data_filtered2 <- hmda_data_filtered1[, columns_to_keep]
+cat("Cantidad de columnas después:", ncol(hmda_data_filtered2))
+```
+
+Antes de proseguir vamos eliminar las instancias que contengan NAs, puesto que estas nos darán problemas en el emparejamiento y al ser una minoria no deberían de alterar los resultados.
+
+```{r}
+cat("Cantidad de filas antes:", nrow(hmda_data_filtered2), "\n")
+hmda_data_filtered3 <- na.omit(hmda_data_filtered2)
+cat("Cantidad de filas después:", nrow(hmda_data_filtered3), "\n")
+```
+
+Veamos las columnas con las que nos hemos quedado que son las candidatas a covariables.
+
+```{r}
+colnames(hmda_data_filtered3)
+```
+
+Ahora vamos a realizar la selección de las covariables que nos parecen dignas de estudio.
+
+```{r}
+data <- hmda_data_filtered3 %>% select(agency_code,loan_type,property_type,owner_occupancy,loan_amount_000s,applicant_ethnicity,co_applicant_ethnicity,applicant_race_1,co_applicant_race_1,applicant_sex,co_applicant_sex,purchaser_type,denied,refinancing)
+```
+
+Obtenemos infomación acerca del nuevo conjunto de datos.
+
+```{r}
+# Obtener información sobre la estructura de los datos
+str(data)
+```
+
+```{r}
+# Resumen estadístico de las variables numéricas
+summary(data)
+```
+
+Parece que dn la variable *loan_amount_000s* hay algún dato atípico. Los eliminamos mediante el método de 3 sigma.
+
+```{r}
+media <- mean(data$loan_amount_000s, na.rm = TRUE)
+desviacion_estandar <- sd(data$loan_amount_000s, na.rm = TRUE)
+
+# Definir los límites
+limite_inferior <- media - 3 * desviacion_estandar
+limite_superior <- media + 3 * desviacion_estandar
+
+# Identificar y eliminar valores atípicos
+data <- data[data$loan_amount_000s >= limite_inferior & data$loan_amount_000s <= limite_superior, ]
+```
+
+Asignamos a una nueva variable, *covariables*, las variables obtenidas en el procedimiento anterior. Eliminando las variables *denied* y *refinancing.*
+
+```{r}
+covariables <- setdiff(colnames(data), c("denied", "refinancing"))
+```
+
+Hacemos una representación gráfica para ver el equilibrio entre las dos clases entre las que vamos a estudiar el efecto.
+
+```{r}
+hmda_data %>%
+  mutate(refinancing = as.factor(refinancing), 
+         denied = as.factor(denied)) %>%
+  group_by(denied, refinancing) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  ungroup() %>%
+  group_by(denied) %>%
+  mutate(prop = count / sum(count)) %>%
+  mutate(prop = ifelse(refinancing == "1", -prop, prop)) %>%
+  ggplot(aes(x = denied, y = prop, fill = refinancing)) + 
+  geom_bar(stat = "identity", alpha = 0.7) +
+  geom_hline(yintercept = 0, color = "black", linetype = "solid") +  # Agregar la línea horizontal en y=0
+  labs(
+    title = "Proporción de Solicitudes Denegadas por Estado de Refinanciación",
+    x = "Solicitud Denegada",
+    y = "Proporción",
+    fill = "Refinanciación"
+  ) +
+  scale_fill_manual(values = c("0" = "cadetblue2", "1" = "pink")) +
+  scale_y_continuous(labels = abs) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    legend.position = "right"
+  )
+```
+
+### Matching
+
+```{r}
+formula <- as.formula(paste("refinancing ~", paste(covariables, collapse = " + ")))
+
+```
+
+Esta línea de código ajusta un modelo de emparejamiento utilizando todas las covariables especificadas en el conjunto de datos **hmda_data_filtered3** para estimar el propensity score y realizar el emparejamiento completo entre las unidades tratadas y no tratadas.
+
+```{r}
+m.ps.qk.1 <- matchit(formula,
+                  method="quick",
+                  distance="glm",
+                  data=data)
+```
+
+Inspeccionamos el objeto resultante:
+
+```{r}
+m.ps.qk.1
+```
+
+Generamos el conjunto de datos emparejados:
+
+```{r}
+m.ps.qk.1.data <- match.data(m.ps.qk.1)
+glimpse(m.ps.qk.1.data)
+```
+
+La función **`bal.tab()`** del paquete **`cobalt`** se utiliza para calcular estadísticas de balance entre grupos tratado y no tratado después de realizar el emparejamiento. Estas estadísticas de balance proporcionan información sobre la similitud entre los grupos en términos de las covariables seleccionadas después del emparejamiento. Obtenemos un resumen del **equilibrio** en variables de confusión:
+
+```{r}
+bal.tab(m.ps.qk.1,stats = c("m","var","ks"),
+        thresholds=c(m=0.1,ks=0.05,var=2), 
+        un=TRUE)
+```
+
+Podemos visualizar los resultados con la función **`love.plot`**
+
+```{r}
+love.plot(m.ps.qk.1,stats = c("m","var","ks"), 
+          abs = TRUE,thresholds=c(m=0.1,ks=0.05,var=2),
+          stars = "std")
+```
+
+Comprobamos la distribución antes y después del emparejamiento de las variables de confusión y del PS.
+
+```{r}
+library(patchwork)
+# Densidad
+p_1 <- bal.plot(m.ps.qk.1,var.name = "distance",which = "both",mirror=TRUE) 
+# histograma
+p_2 <- bal.plot(m.ps.qk.1, var.name = "distance", which = "both",
+         type = "histogram", mirror = TRUE) 
+p_1 + p_2 + plot_layout(ncol = 1)
+```
+
+Parece que hemos conseguido hacer un emparejamiento que balancee entre los datos. De todas formas, vamos a comprobar el balaceo columna por columna.
+
+```{r}
+p_1 <- bal.plot(m.ps.qk.1,var.name = "agency_code",type = "histogram",which="both",mirror = TRUE)
+p_2 <- bal.plot(m.ps.qk.1,var.name = "loan_type",type = "histogram",which="both",mirror = TRUE)
+p_3 <- bal.plot(m.ps.qk.1,var.name = "property_type",type = "histogram",which="both",mirror = TRUE)
+p_4 <- bal.plot(m.ps.qk.1,var.name = "owner_occupancy",type = "histogram",which="both",mirror = TRUE)
+p_5 <- bal.plot(m.ps.qk.1,var.name = "loan_amount_000s",which="both",mirror = TRUE)
+p_6 <- bal.plot(m.ps.qk.1,var.name = "applicant_ethnicity",type = "histogram",which="both",mirror = TRUE)
+p_7 <- bal.plot(m.ps.qk.1,var.name = "co_applicant_ethnicity",type = "histogram",which="both",mirror = TRUE)
+p_8 <- bal.plot(m.ps.qk.1,var.name = "applicant_race_1",type = "histogram",which="both",mirror = TRUE)
+p_9 <- bal.plot(m.ps.qk.1,var.name = "co_applicant_race_1",type = "histogram",which="both",mirror = TRUE)
+p_10 <- bal.plot(m.ps.qk.1,var.name = "applicant_sex",type = "histogram",which="both",mirror = TRUE)
+p_11 <- bal.plot(m.ps.qk.1,var.name = "co_applicant_sex",type = "histogram",which="both",mirror = TRUE)
+p_12 <- bal.plot(m.ps.qk.1,var.name = "purchaser_type",type = "histogram",which="both",mirror = TRUE)
+```
+
+```{r fig.height=12}
+p_1 + p_2 + p_3 + p_4+ plot_layout(ncol = 1, nrow=4, heights = unit(rep(5, 4), rep('cm', 4)))
+```
+
+```{r fig.height=12}
+p_5+ p_6 + p_7 + p_8 + plot_layout(ncol = 1, nrow=4, heights = unit(rep(5, 4), rep('cm', 4)))
+```
+
+```{r fig.height=12}
+p_9 + p_10 + p_11 + p_12 + plot_layout(ncol = 1, nrow=4, heights = unit(rep(5, 4), rep('cm', 4)))
+```
+
+No parece haber desequilibrios notables en los datos de estas columnas. Al haber gran cantidad de columnas es posible no encontrar el equilibrio perfecto en todas ellas.
+
+### Estimación del efecto causal
+
+A continuación, queremos calcular la diferencia de medias entre ambos grupos tras realizar el emparejamiento.
+
+```{r}
+diff_means<-with(m.ps.qk.1.data, weighted.mean(denied[refinancing==1],weights[refinancing==1]) - weighted.mean(denied[refinancing==0], weights[refinancing==0]))
+
+print(diff_means)
+```
+
+Este resultado sugiere que podría haber un mayor riesgo de denegar las solicitudes de préstamo solicitadas con el motivo de refinanciación en función de las solicitadas con otro motivo.
+
+```{r}
+library(survey)
+design <- svydesign(ids = ~1,
+                     data = m.ps.qk.1.data, 
+                     weights = ~weights)
+svyttest(denied ~ refinancing, design)
+```
+
+Tras realizar una prueba t de Student para comparar los rechazos (**denied**) entre los grupos tratado (**`refinancing == 1`**) y no tratado (**`refinancing == 0`**). El intervalo de confianza del 95% (0.0396 a 0.0462) proporciona un rango en el cual se encuentra la verdadera diferencia en las medias con un 95% de confianza. Este intervalo no incluye el 0, lo que refuerza la conclusión de que existe una diferencia significativa.
+
+## Conclusiones del procedimiento y los resultados obtenidos
+
+Tras evaluar el efecto causal del proposito de refinanciación de un crédito hipotecario sobre el rechazo del mismo hemos obtenido que sí existe un efecto causal. Esto implica que cuando el motivo de solicitar una hipoteca es una refinanciación, crecen las probabilidades de que esta sea rechazada. Más concretamente las hipotecas solicitadas con motivo de refinanciación tienen un 4% más de probabilidades de ser rechazadas frente a las hipotecas solicitadas con otro motivo.
